@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Albion Comp Manager — จัดเซ็ต & คอมป์ 5-10-20</title>
+  <link rel="icon" href="WP/T8_2H_CLAYMORE.png" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="WP/T8_2H_CLAYMORE.png" alt="" class="brand-icon" />
+      <div>
+        <h1>Albion Comp Manager</h1>
+        <p class="brand-sub">จัดเซ็ต & จัดคอมป์ 5 / 10 / 20 คน</p>
+      </div>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-tab="builds">🛡️ บิลด์ / เซ็ต</button>
+      <button class="tab" data-tab="comps">👥 คอมป์</button>
+    </nav>
+    <div class="topbar-actions">
+      <span id="save-status" class="save-status"></span>
+      <span id="auth-area" hidden></span>
+      <button id="btn-export" class="btn btn-ghost" title="ดาวน์โหลดข้อมูลทั้งหมดเป็นไฟล์ JSON">⬇ Export</button>
+      <button id="btn-import" class="btn btn-ghost" title="นำเข้าข้อมูลจากไฟล์ JSON">⬆ Import</button>
+      <input type="file" id="import-file" accept=".json,application/json" hidden />
+    </div>
+  </header>
+
+  <main id="view"></main>
+
+  <div id="modal-root"></div>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
