@@ -262,6 +262,29 @@ input::placeholder { color: #5d636d; }
 .slot-weap img { width: 40px; height: 40px; object-fit: contain; display: block; }
 .slot-weap .no-weap { width: 40px; height: 40px; border: 1px dashed var(--border); border-radius: 6px; opacity: .4; }
 .slot-build select { width: 100%; max-width: 320px; }
+.slot-gear-mini {
+  display: flex;
+  gap: 3px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+.slot-gear-mini img {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  background: radial-gradient(circle at 50% 40%, #2b2f38, #1a1d23);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px;
+}
+.slot-gear-mini .mini-empty {
+  width: 26px;
+  height: 26px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  opacity: 0.4;
+  display: inline-block;
+}
 .slot-role { width: 90px; }
 .slot-player input { width: 100%; max-width: 200px; }
 .slot-note input { width: 100%; }

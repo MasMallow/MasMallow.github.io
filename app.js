@@ -1336,11 +1336,23 @@ function renderCompDetail(root, comp) {
             .map(({ slot, idx }) => {
               const b = state.builds.find((x) => x.id === slot.build);
               const wp = b ? item(b.weapon) : null;
+              // mini gear strip ใต้ชื่อบิลด์ — ให้เห็นว่าใส่อะไรไว้ ไม่ต้องเปิดบิลด์ดู
+              const miniSlots = ['offhand', 'head', 'armor', 'shoes', 'cape'];
+              const miniGear = b
+                ? `<div class="slot-gear-mini">${miniSlots
+                    .map((k) => {
+                      const it = item(b[k]);
+                      return it
+                        ? `<img src="${esc(it.img)}" title="${esc(it.name)}" alt="" />`
+                        : `<span class="mini-empty" title="ไม่ได้ใส่"></span>`;
+                    })
+                    .join('')}</div>`
+                : '';
               return `
             <tr data-idx="${idx}">
               <td class="slot-num">${idx + 1}.</td>
               <td class="slot-weap">${wp ? `<img src="${esc(wp.img)}" title="${esc(wp.name)}" alt=""/>` : '<div class="no-weap"></div>'}</td>
-              <td class="slot-build"><select data-field="build" ${dis}>${buildOptionsHtml(slot.build)}</select></td>
+              <td class="slot-build"><select data-field="build" ${dis}>${buildOptionsHtml(slot.build)}</select>${miniGear}</td>
               <td class="slot-role">${b ? `<span class="role-badge ${roleClass(b.role)}">${esc(roleLabel(b.role))}</span>` : ''}</td>
               <td class="slot-player"><input type="text" data-field="player" placeholder="ชื่อผู้เล่น" value="${esc(slot.player)}" ${dis} /></td>
               <td class="slot-note"><input type="text" data-field="note" placeholder="โน้ต เช่น ตัวสำรอง, เรียก engage" value="${esc(slot.note)}" ${dis} /></td>
