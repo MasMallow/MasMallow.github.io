@@ -145,7 +145,7 @@ input::placeholder { color: #5d636d; }
 /* ---------- build cards ---------- */
 .build-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(370px, 1fr));
   gap: 14px;
 }
 .build-card {
@@ -160,7 +160,7 @@ input::placeholder { color: #5d636d; }
 .build-card:hover { border-color: var(--gold-dim); }
 .build-card-head { display: flex; align-items: center; gap: 10px; }
 .build-card-head h3 { margin: 0; font-size: 16px; flex: 1; word-break: break-word; }
-.gear-row { display: flex; gap: 6px; }
+.gear-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .gear-cell {
   width: 56px;
   height: 56px;

@@ -17,6 +17,7 @@ const GEAR_SLOTS = [
   { key: 'head', label: 'หมวก', cat: 'head' },
   { key: 'armor', label: 'เสื้อเกราะ', cat: 'armor' },
   { key: 'shoes', label: 'รองเท้า', cat: 'shoes' },
+  { key: 'cape', label: 'เคป', cat: 'cape' },
 ];
 
 const COMP_SIZES = [5, 10, 20];
@@ -821,7 +822,8 @@ function sanitizeBuilds(arr) {
       head: idOrNull(b.head),
       armor: idOrNull(b.armor),
       shoes: idOrNull(b.shoes),
-      cape: str(b.cape),
+      // เก็บ cape เป็น item ID เท่านั้น (รุ่นเก่าเคยเก็บเป็น free text — ตัดทิ้งถ้าไม่ใช่ ID ที่รู้จัก)
+      cape: typeof b.cape === 'string' && /^T\d+_CAPEITEM/.test(b.cape) ? b.cape : null,
       food: str(b.food),
       potion: str(b.potion),
       note: str(b.note),
@@ -983,7 +985,7 @@ function openBuildEditor(buildId) {
   const existing = state.builds.find((b) => b.id === buildId);
   const draft = existing
     ? JSON.parse(JSON.stringify(existing))
-    : { id: uid(), name: '', role: 'dps', weapon: null, offhand: null, head: null, armor: null, shoes: null, cape: '', food: '', potion: '', note: '' };
+    : { id: uid(), name: '', role: 'dps', weapon: null, offhand: null, head: null, armor: null, shoes: null, cape: null, food: '', potion: '', note: '' };
 
   const overlay = openModal(`
     <h2>${existing ? 'แก้ไขบิลด์' : 'สร้างบิลด์ใหม่'}</h2>
@@ -999,7 +1001,6 @@ function openBuildEditor(buildId) {
     </div>
     <div class="gear-pick-row" id="be-gear"></div>
     <div class="form-row">
-      <label>เคป <input type="text" id="be-cape" placeholder="เช่น Martlock Cape" value="${esc(draft.cape)}" /></label>
       <label>อาหาร <input type="text" id="be-food" placeholder="เช่น Beef Stew" value="${esc(draft.food)}" /></label>
       <label>ยา <input type="text" id="be-potion" placeholder="เช่น Resistance Potion" value="${esc(draft.potion)}" /></label>
     </div>
@@ -1066,7 +1067,7 @@ function openBuildEditor(buildId) {
     if (act === 'save') {
       draft.name = $('#be-name', overlay).value.trim() || 'บิลด์ไม่มีชื่อ';
       draft.role = $('#be-role', overlay).value;
-      draft.cape = $('#be-cape', overlay).value.trim();
+      // cape ตอนนี้เป็น item ID (เลือกจากรูป) — อ่านค่าจาก draft โดยตรง ไม่ต้องอ่าน input
       draft.food = $('#be-food', overlay).value.trim();
       draft.potion = $('#be-potion', overlay).value.trim();
       draft.note = $('#be-note', overlay).value.trim();
@@ -1161,7 +1162,7 @@ function renderBuilds(root) {
 }
 
 function buildCardHtml(b) {
-  const extras = [b.cape && `เคป: ${esc(b.cape)}`, b.food && `อาหาร: ${esc(b.food)}`, b.potion && `ยา: ${esc(b.potion)}`].filter(Boolean);
+  const extras = [b.food && `อาหาร: ${esc(b.food)}`, b.potion && `ยา: ${esc(b.potion)}`].filter(Boolean);
   return `
     <div class="build-card">
       <div class="build-card-head">
