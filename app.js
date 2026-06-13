@@ -33,38 +33,63 @@ let buildRoleFilter = '';
 let serverOk = true;
 
 // ---------- storage mode ----------
-// 'supabase' = คลาวด์แชร์ทั้งกิลด์ (อ่านได้ทุกคน แก้ได้เฉพาะคนล็อกอิน)
+// 'firebase' = คลาวด์แชร์ทั้งกิลด์ (อ่านได้ทุกคน แก้ได้เฉพาะคนล็อกอิน + อยู่ใน allowlist)
 // 'local'    = เซิร์ฟเวอร์ node ในเครื่อง (data.json)
 // 'browser'  = localStorage อย่างเดียว (เปิดแบบ static ไม่มี server)
 let MODE = 'browser';
-let sb = null; // supabase client
-let canEdit = true; // false = โหมดดูอย่างเดียว (supabase ยังไม่ล็อกอิน)
-let authToken = null; // access token สำหรับ flush ตอนปิดแท็บ
+let fbApp = null; // firebase app
+let fbDb = null; // realtime database ref
+let fbAuth = null; // auth
+let canEdit = true; // false = โหมดดูอย่างเดียว (ยังไม่ล็อกอิน หรือไม่อยู่ใน allowlist)
 let pendingRemote = null; // ข้อมูลใหม่จากคลาวด์ที่รอ apply (ค้างไว้ตอน modal เปิดอยู่)
+let offlinePending = false; // มีงานออฟไลน์ใน localStorage ที่ยังไม่ขึ้นคลาวด์
+let isOrganizer = false; // ผ่านการเช็คใน allowlist /organizers/{uid} แล้ว
 
 const CFG = window.APP_CONFIG || {};
 
-function supabaseConfigured() {
-  return !!(CFG.SUPABASE_URL && CFG.SUPABASE_ANON_KEY);
+function firebaseConfigured() {
+  return !!(CFG.firebase && CFG.firebase.apiKey && CFG.firebase.databaseURL);
 }
 
-// โหลด supabase-js เฉพาะตอนตั้งค่าไว้ — vendor ไฟล์ไว้กับโปรเจกต์เอง (supabase.min.js v2.108.1)
+// โหลด Firebase compat SDK เฉพาะตอนตั้งค่าไว้ — vendor ไฟล์ไว้กับโปรเจกต์เอง (12.14.0)
 // ไม่พึ่ง CDN ภายนอก: ตัดปัญหา CDN ล่ม/ช้า/ถูกสับเปลี่ยนไฟล์ และกำหนดเวอร์ชันแน่นอน
-function loadSupabaseLib(timeoutMs = 8000) {
+function loadFirebaseLib(timeoutMs = 8000) {
   return new Promise((resolve) => {
-    if (window.supabase) return resolve(true);
-    const t = setTimeout(() => resolve(false), timeoutMs);
-    const s = document.createElement('script');
-    s.src = 'supabase.min.js';
-    s.onload = () => {
-      clearTimeout(t);
-      resolve(!!window.supabase);
+    if (window.firebase && window.firebase.database && window.firebase.auth) return resolve(true);
+    const sources = ['firebase-app-compat.js', 'firebase-auth-compat.js', 'firebase-database-compat.js'];
+    let remaining = sources.length;
+    let failed = false;
+    const t = setTimeout(() => {
+      failed = true;
+      resolve(false);
+    }, timeoutMs);
+    const finish = () => {
+      if (failed) return;
+      if (--remaining === 0) {
+        clearTimeout(t);
+        resolve(!!(window.firebase && window.firebase.database && window.firebase.auth));
+      }
     };
-    s.onerror = () => {
+    const fail = () => {
+      if (failed) return;
+      failed = true;
       clearTimeout(t);
       resolve(false);
     };
-    document.head.appendChild(s);
+    // firebase-app ต้องโหลดก่อนเสมอ — chain แบบ sequential
+    let i = 0;
+    const next = () => {
+      if (failed || i >= sources.length) return; // หยุดเชนทันทีถ้า timeout/error
+      const s = document.createElement('script');
+      s.src = sources[i++];
+      s.onload = () => {
+        finish();
+        next();
+      };
+      s.onerror = fail;
+      document.head.appendChild(s);
+    };
+    next();
   });
 }
 
@@ -100,6 +125,8 @@ function roleClass(roleId) {
 // ---------- persistence ----------
 let saveTimer = null;
 let saving = false; // มี save วิ่งอยู่บนเครือข่าย — กัน realtime ทับ state กลางคัน
+let dirty = false; // มี local edit ที่ยังไม่ confirm บนคลาวด์ — กัน applyRemote ทับงาน
+let authSeq = 0; // monotonic counter — กัน applySession ที่ทำงานช้ามา clobber session ใหม่
 
 function lsWrite() {
   try {
@@ -119,6 +146,7 @@ function scheduleSave() {
   setSaveStatus('กำลังบันทึก…', '');
   // เขียน localStorage ทันที (กันปิดแท็บก่อน debounce ครบ 500ms) — ดีเลย์เฉพาะการยิงขึ้น server
   state.savedAt = Date.now();
+  dirty = true;
   lsWrite();
   clearTimeout(saveTimer);
   saveTimer = setTimeout(doSave, 500);
@@ -133,7 +161,7 @@ async function doSave() {
   }
   saving = true;
   try {
-    if (MODE === 'supabase') await doSaveSupabase();
+    if (MODE === 'firebase') await doSaveFirebase();
     else await doSaveLocal();
   } finally {
     saving = false;
@@ -159,6 +187,7 @@ async function doSaveLocal() {
       state.rev = out.rev;
       lsWrite();
     }
+    dirty = false;
     serverOk = true;
     setSaveStatus('บันทึกแล้ว ✓', 'ok');
   } catch {
@@ -167,59 +196,75 @@ async function doSaveLocal() {
   }
 }
 
-async function doSaveSupabase() {
-  if (!canEdit || !sb) {
+// ใช้ RTDB transaction — atomic check-and-set ระดับ database
+// Firebase จัดการ retry + conflict ให้เอง ไม่ต้อง track rev ฝั่งเรา
+async function doSaveFirebase() {
+  if (!canEdit || !fbDb) {
     setSaveStatus('โหมดดูอย่างเดียว — ล็อกอินเพื่อแก้ไข', 'warn');
     return;
   }
+  const mine = { builds: state.builds, comps: state.comps };
   try {
-    const { data: rows, error } = await sb
-      .from('app_data')
-      .update({
-        data: { builds: state.builds, comps: state.comps },
-        rev: state.rev + 1,
-        saved_at: new Date().toISOString(),
-      })
-      .eq('id', 1)
-      .eq('rev', state.rev)
-      .select('rev');
-    if (error) throw error;
-    if (!rows || rows.length === 0) {
-      // ชนกับการแก้ของคนอื่น — สำรองงานเราไว้ก่อน แล้วดึงเวอร์ชันล่าสุดมาแสดง
-      const mine = { builds: state.builds, comps: state.comps };
+    const ref = fbDb.ref('app_data');
+    const tx = await ref.transaction((current) => {
+      const curRev = (current && current.rev) || 0;
+      // ตอน read ครั้งแรก current=null = RTDB ยังไม่มีข้อมูล — สร้างได้
+      // ตอน read แล้วได้ snapshot ที่ rev เปลี่ยน = conflict (abort = undefined)
+      if (current && curRev !== state.rev) return undefined; // abort → committed=false
+      return {
+        rev: curRev + 1,
+        savedAt: window.firebase.database.ServerValue.TIMESTAMP,
+        data: mine,
+      };
+    });
+    if (!tx.committed) {
+      // ชนกับการแก้ของคนอื่น — สำรองงานเราไว้ก่อน แล้วเปิด modal ให้เลือก
       try {
         localStorage.setItem(LS_KEY + ':conflict', JSON.stringify({ savedAt: Date.now(), ...mine }));
       } catch {
         /* ignore */
       }
-      await resyncAfterConflict();
+      const snap = tx.snapshot && tx.snapshot.val();
+      if (snap) {
+        if ($('#modal-root').children.length > 0) pendingRemote = snap;
+        else applyRemote(snap);
+      }
       setSaveStatus('⚠ มีคนแก้พร้อมกัน — แสดงเวอร์ชันล่าสุดแล้ว', 'err');
       openConflictModal(mine);
       return;
     }
-    state.rev = rows[0].rev;
+    const snap = tx.snapshot.val();
+    state.rev = snap.rev;
+    state.savedAt = typeof snap.savedAt === 'number' ? snap.savedAt : Date.now();
+    dirty = false;
+    try {
+      localStorage.removeItem(LS_KEY + ':pagehide');
+    } catch {
+      /* ignore */
+    }
     lsWrite();
     setSaveStatus('บันทึกขึ้นคลาวด์ ✓', 'ok');
-  } catch {
+  } catch (e) {
+    if (e && (e.code === 'PERMISSION_DENIED' || /permission/i.test(String(e.message || '')))) {
+      canEdit = false;
+      document.body.classList.add('viewer');
+      render();
+      setSaveStatus('⚠ ไม่มีสิทธิ์แก้ไข — ต้องอยู่ใน allowlist ผู้จัด', 'err');
+      return;
+    }
     setSaveStatus('คลาวด์ไม่ตอบ — เก็บในเบราว์เซอร์ไว้ก่อนแล้ว', 'warn');
   }
 }
 
-// ดึงเวอร์ชันล่าสุดหลังชน conflict (เรียกระหว่าง saving=true จึงข้าม receiveRemote guard)
-async function resyncAfterConflict() {
-  try {
-    const { data: row, error } = await sb.from('app_data').select('rev,saved_at,data').eq('id', 1).single();
-    if (!error && row && row.data) {
-      if ($('#modal-root').children.length > 0) pendingRemote = row;
-      else applyRemote(row);
-    }
-  } catch {
-    /* ignore */
-  }
-}
-
 function maybeApplyPendingRemote() {
-  if (pendingRemote && !offlinePending && !saving && saveTimer === null && $('#modal-root').children.length === 0) {
+  if (
+    pendingRemote &&
+    !dirty &&
+    !offlinePending &&
+    !saving &&
+    saveTimer === null &&
+    $('#modal-root').children.length === 0
+  ) {
     applyRemote(pendingRemote);
   }
 }
@@ -251,33 +296,43 @@ function downloadJson(obj, filename) {
   URL.revokeObjectURL(a.href);
 }
 
-// ปิดแท็บ/รีโหลดระหว่างรอ debounce หรือระหว่าง save วิ่งอยู่ → ดันข้อมูลขึ้นปลายทางให้ทัน
-function flushSave() {
-  if (saveTimer === null && !saving) return;
+// ปิดแท็บ/รีโหลดระหว่างรอ debounce → ดันข้อมูลขึ้นปลายทางให้ทัน
+// (ถ้า saving=true อยู่ ปล่อย transaction ทำต่อ ไม่ยิง REST ขนานทับ)
+async function flushSave() {
+  if (saveTimer === null) return;
   clearTimeout(saveTimer);
   saveTimer = null;
+  // สำรอง payload ก่อนยิงเสมอ — รีโหลดครั้งหน้ากู้คืนได้ถ้า PUT หาย/โดน rules ปฏิเสธ
+  try {
+    localStorage.setItem(
+      LS_KEY + ':pagehide',
+      JSON.stringify({ savedAt: state.savedAt, rev: state.rev, builds: state.builds, comps: state.comps }),
+    );
+  } catch {
+    /* ignore */
+  }
   try {
     if (MODE === 'local') {
       navigator.sendBeacon('api/data', new Blob([JSON.stringify(state)], { type: 'application/json' }));
-    } else if (MODE === 'supabase' && canEdit && authToken && sb) {
-      // sendBeacon ใส่ header ไม่ได้ — ใช้ fetch keepalive ยิง REST ตรง
-      const body = JSON.stringify({
-        data: { builds: state.builds, comps: state.comps },
-        rev: state.rev + 1,
-        saved_at: new Date().toISOString(),
-      });
-      fetch(`${CFG.SUPABASE_URL}/rest/v1/app_data?id=eq.1&rev=eq.${state.rev}`, {
-        method: 'PATCH',
-        // เพดาน keepalive คือ 64KiB — เกินแล้ว fetch จะ reject ทันที จึงส่งแบบธรรมดา (best-effort)
-        keepalive: new Blob([body]).size <= 60 * 1024,
-        headers: {
-          'Content-Type': 'application/json',
-          apikey: CFG.SUPABASE_ANON_KEY,
-          Authorization: 'Bearer ' + authToken,
-          Prefer: 'return=minimal',
-        },
-        body,
-      }).catch(() => {});
+    } else if (MODE === 'firebase' && canEdit && fbDb && fbAuth?.currentUser && !saving) {
+      // RTDB REST รองรับ keepalive — fire-and-forget โดยใช้ idToken
+      try {
+        const token = await fbAuth.currentUser.getIdToken();
+        const body = JSON.stringify({
+          rev: state.rev + 1,
+          savedAt: { '.sv': 'timestamp' },
+          data: { builds: state.builds, comps: state.comps },
+        });
+        const url = `${CFG.firebase.databaseURL}/app_data.json`;
+        fetch(url, {
+          method: 'PUT',
+          keepalive: new Blob([body]).size <= 60 * 1024,
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+          body,
+        }).catch(() => {});
+      } catch {
+        /* token หมดอายุ — localStorage ถูกเขียนไว้แล้ว */
+      }
     }
   } catch {
     // localStorage ถูกเขียนไว้แล้วใน scheduleSave
@@ -298,7 +353,7 @@ window.addEventListener('pageshow', async (e) => {
         lsWrite();
         render();
       }
-    } else if (MODE === 'supabase') {
+    } else if (MODE === 'firebase') {
       await refreshFromCloud();
     }
   } catch {
@@ -323,24 +378,26 @@ async function loadItems() {
   return [];
 }
 
-let offlinePending = false; // มีงานออฟไลน์ใน localStorage ที่ยังไม่ขึ้นคลาวด์
-
 async function loadAll() {
   ITEMS = await loadItems();
   ITEM_BY_ID = Object.fromEntries(ITEMS.map((i) => [i.id, i]));
 
-  // โหมดคลาวด์ — ตั้งค่า supabase ไว้แล้วต้องไม่ตกไปโหมดแก้ไขอิสระ แม้โหลดไลบรารีไม่ได้
-  if (supabaseConfigured()) {
-    MODE = 'supabase';
-    if (await loadSupabaseLib()) {
+  // โหมดคลาวด์ — ตั้งค่า firebase ไว้แล้วต้องไม่ตกไปโหมดแก้ไขอิสระ แม้โหลดไลบรารีไม่ได้
+  if (firebaseConfigured()) {
+    MODE = 'firebase';
+    if (await loadFirebaseLib()) {
       try {
-        sb = window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY);
+        fbApp = window.firebase.initializeApp(CFG.firebase);
+        fbAuth = window.firebase.auth();
+        fbDb = window.firebase.database();
       } catch {
-        sb = null; // URL/key ในไฟล์ config ผิดรูปแบบ
+        fbApp = null;
+        fbDb = null;
+        fbAuth = null;
       }
     }
-    if (sb) {
-      await loadDataSupabase();
+    if (fbDb) {
+      await loadDataFirebase();
       return;
     }
     // ไลบรารีหาย/คีย์ผิด — อ่านอย่างเดียวจากสำเนาในเครื่อง (initAuth จะล็อก UI ให้)
@@ -404,12 +461,11 @@ async function loadAll() {
   if (pushBack && serverData) scheduleSave();
 }
 
-async function loadDataSupabase() {
+async function loadDataFirebase() {
   let row = null;
   try {
-    const res = await sb.from('app_data').select('rev,saved_at,data').eq('id', 1).single();
-    if (res.error) throw res.error;
-    row = res.data;
+    const snap = await fbDb.ref('app_data').get();
+    row = snap.exists() ? snap.val() : null;
   } catch {
     /* คลาวด์ไม่ตอบ */
   }
@@ -419,17 +475,24 @@ async function loadDataSupabase() {
   } catch {
     /* ignore */
   }
-  const cloudSavedAt = row ? Date.parse(row.saved_at) || 0 : 0;
+  // pagehide flush ที่อาจหายไป (โดน rules ปฏิเสธ/หลุดกลางคัน) — ใช้ของนี้ถ้าใหม่กว่า ls
+  try {
+    const pageh = JSON.parse(localStorage.getItem(LS_KEY + ':pagehide'));
+    if (pageh && (!ls || (pageh.savedAt || 0) > (ls.savedAt || 0))) {
+      ls = { rev: pageh.rev, savedAt: pageh.savedAt, builds: pageh.builds, comps: pageh.comps };
+    }
+  } catch {
+    /* ignore */
+  }
+  const cloudSavedAt = row && typeof row.savedAt === 'number' ? row.savedAt : 0;
   if (ls && (ls.savedAt || 0) > cloudSavedAt && (ls.builds?.length || ls.comps?.length)) {
     // มีงานออฟไลน์ค้างในเครื่องที่ใหม่กว่าคลาวด์ — ใช้ชุดนี้ก่อน แล้วดันขึ้นคลาวด์เมื่อล็อกอิน
     state.builds = sanitizeBuilds(ls.builds);
     state.comps = sanitizeComps(ls.comps);
     state.savedAt = ls.savedAt || 0;
-    // เก็บ rev "จุดที่แยกสาย" ไว้ — ถ้าคลาวด์ขยับไปแล้ว ระบบ rev จะตรวจชนแทนการทับเงียบๆ
     state.rev = ls.rev || 0;
     offlinePending = true;
     if (row && (row.rev || 0) !== (ls.rev || 0)) {
-      // ทั้งสองฝั่งแก้คนละทาง — เก็บเวอร์ชันคลาวด์ไว้ให้ผู้ใช้เลือกหลังล็อกอิน
       pendingRemote = row;
       setSaveStatus('⚠ ทั้งเครื่องนี้และคลาวด์มีการแก้ — ล็อกอินเพื่อเลือกชุดที่จะใช้', 'warn');
     } else {
@@ -451,45 +514,52 @@ async function loadDataSupabase() {
   }
 }
 
-// ---------- cloud sync (supabase) ----------
-let rtPollTimer = null;
-
-function startRtPolling() {
-  if (!rtPollTimer) rtPollTimer = setInterval(refreshFromCloud, 30000);
-}
-
+// ---------- cloud sync (firebase RTDB) ----------
+// RTDB onValue ทำงาน realtime + ออฟไลน์ cache ในตัว — เรียบง่ายกว่า Supabase channel มาก
+// หมายเหตุ: network drop = Firebase auto-reconnect, แต่ PERMISSION_DENIED = listener หลุดถาวร ต้อง re-attach เอง
+let rtRetryQueued = false;
 function startRealtime() {
-  if (MODE !== 'supabase' || !sb) return;
-  try {
-    sb.channel('app_data_changes')
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'app_data', filter: 'id=eq.1' }, (payload) => {
-        receiveRemote(payload.new);
-      })
-      .subscribe((status) => {
-        // subscribe ล้มเหลวมาทาง callback ไม่ใช่ exception — ถ้าช่องเสียให้ poll แทน
-        if (status === 'SUBSCRIBED') {
-          if (rtPollTimer) {
-            clearInterval(rtPollTimer);
-            rtPollTimer = null;
-          }
-          refreshFromCloud(); // เก็บตกช่วงที่ช่องหลุด
-        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-          startRtPolling();
-        }
-      });
-  } catch {
-    startRtPolling();
-  }
+  if (MODE !== 'firebase' || !fbDb) return;
+  const attach = () => {
+    try {
+      fbDb.ref('app_data').on(
+        'value',
+        (snap) => {
+          if (snap.exists()) receiveRemote(snap.val());
+        },
+        () => {
+          setSaveStatus('การเชื่อมต่อคลาวด์ขาด — จะลองใหม่อัตโนมัติ', 'err');
+          if (rtRetryQueued) return;
+          rtRetryQueued = true;
+          const retry = () => {
+            rtRetryQueued = false;
+            attach();
+            refreshFromCloud();
+          };
+          window.addEventListener('online', retry, { once: true });
+          document.addEventListener('visibilitychange', function onVis() {
+            if (document.visibilityState === 'visible') {
+              document.removeEventListener('visibilitychange', onVis);
+              if (rtRetryQueued) retry();
+            }
+          });
+        },
+      );
+    } catch {
+      /* ignore */
+    }
+  };
+  attach();
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') refreshFromCloud();
   });
 }
 
 async function refreshFromCloud() {
-  if (MODE !== 'supabase' || !sb) return;
+  if (MODE !== 'firebase' || !fbDb) return;
   try {
-    const { data: row, error } = await sb.from('app_data').select('rev,saved_at,data').eq('id', 1).single();
-    if (!error && row) receiveRemote(row);
+    const snap = await fbDb.ref('app_data').get();
+    if (snap.exists()) receiveRemote(snap.val());
   } catch {
     /* ignore */
   }
@@ -502,11 +572,15 @@ function receiveRemote(row) {
     refreshFromCloud();
     return;
   }
-  // กำลังแก้อยู่ / มี save วิ่งอยู่ / มีงานออฟไลน์รอผู้ใช้ตัดสินใจ — อย่าทับ เก็บไว้ก่อน
-  if (offlinePending || saving || saveTimer !== null || $('#modal-root').children.length > 0) {
+  // กำลังแก้อยู่ / มี save วิ่งอยู่ / มีงานออฟไลน์รอผู้ใช้ตัดสินใจ / มี dirty edit ที่ยังไม่ขึ้นคลาวด์ — อย่าทับ เก็บไว้ก่อน
+  if (dirty || offlinePending || saving || saveTimer !== null || $('#modal-root').children.length > 0) {
     pendingRemote = row;
     setSaveStatus(
-      offlinePending ? '⚠ ทั้งเครื่องนี้และคลาวด์มีการแก้ — ล็อกอินเพื่อเลือกชุดที่จะใช้' : '🔄 มีข้อมูลใหม่จากคลาวด์ — จะอัปเดตเมื่อเสร็จงานตรงหน้า',
+      offlinePending
+        ? '⚠ ทั้งเครื่องนี้และคลาวด์มีการแก้ — ล็อกอินเพื่อเลือกชุดที่จะใช้'
+        : dirty
+          ? '⚠ มีงานที่ยังไม่บันทึก และคลาวด์มีการแก้ใหม่ — จะให้เลือกเมื่อบันทึกเสร็จ'
+          : '🔄 มีข้อมูลใหม่จากคลาวด์ — จะอัปเดตเมื่อเสร็จงานตรงหน้า',
       'warn',
     );
     return;
@@ -519,38 +593,81 @@ function applyRemote(row) {
   state.builds = sanitizeBuilds(row.data?.builds);
   state.comps = sanitizeComps(row.data?.comps);
   state.rev = row.rev || 0;
-  state.savedAt = Date.parse(row.saved_at) || 0;
+  state.savedAt = typeof row.savedAt === 'number' ? row.savedAt : 0;
   lsWrite();
   render();
   setSaveStatus('อัปเดตจากคลาวด์ ✓', 'ok');
 }
 
-// ---------- auth (supabase) ----------
+// ---------- auth (firebase) ----------
 async function initAuth() {
-  if (MODE !== 'supabase') {
+  // โหมดคลาวด์แต่ SDK โหลดไม่ผ่าน → ห้ามให้แก้ไข (ตามคำสัญญาใน loadAll)
+  if (MODE === 'firebase' && !fbAuth) {
+    canEdit = false;
+    isOrganizer = false;
+    document.body.classList.add('viewer');
+    renderAuthArea('');
+    return;
+  }
+  if (MODE !== 'firebase') {
     canEdit = true;
     renderAuthArea('');
     return;
   }
   canEdit = false;
-  document.body.classList.add('viewer');
-  try {
-    const {
-      data: { session },
-    } = await sb.auth.getSession();
-    applySession(session);
-    sb.auth.onAuthStateChange((_evt, session) => applySession(session));
-  } catch {
-    applySession(null);
-  }
+  isOrganizer = false;
+  // ถ้ามี session ที่แคชไว้ (compat SDK กู้คืน sync จาก localStorage) ไม่ต้องโชว์ viewer mode ก่อน
+  // — กัน flash ของ UI โหมดดูระหว่างที่ allowlist check ยังไม่เสร็จ
+  if (!fbAuth.currentUser) document.body.classList.add('viewer');
+  // รอ applySession รอบแรกให้เสร็จก่อน init() จะเรียก render() (จะได้ไม่ flash)
+  await new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    const safety = setTimeout(finish, 3000);
+    try {
+      fbAuth.onAuthStateChanged(
+        async (user) => {
+          try {
+            await applySession(user);
+          } finally {
+            clearTimeout(safety);
+            finish();
+          }
+        },
+        () => {
+          clearTimeout(safety);
+          finish();
+        },
+      );
+    } catch {
+      clearTimeout(safety);
+      finish();
+    }
+  });
 }
 
-function applySession(session) {
+async function applySession(user) {
+  const mySeq = ++authSeq;
   const was = canEdit;
-  canEdit = !!session;
-  authToken = session?.access_token || null;
+  // ล็อกอินอย่างเดียวยังแก้ไม่ได้ — ต้องอยู่ใน allowlist /organizers/{uid} ด้วย
+  let nextIsOrganizer = false;
+  if (user && fbDb) {
+    try {
+      const snap = await fbDb.ref(`organizers/${user.uid}`).get();
+      nextIsOrganizer = snap.exists() && snap.val() === true;
+    } catch {
+      nextIsOrganizer = false;
+    }
+  }
+  if (mySeq !== authSeq) return; // มีเหตุการณ์ auth ใหม่แล้ว — ผลลัพธ์เก่าทิ้งไป
+  isOrganizer = nextIsOrganizer;
+  canEdit = !!user && isOrganizer;
   document.body.classList.toggle('viewer', !canEdit);
-  renderAuthArea(session?.user?.email || '');
+  renderAuthArea(user?.email || '', !!user);
   if (canEdit && offlinePending) {
     offlinePending = false;
     if (pendingRemote) {
@@ -559,6 +676,20 @@ function applySession(session) {
     } else {
       scheduleSave(); // คลาวด์ไม่ขยับระหว่างเราออฟไลน์ — ดันขึ้นได้เลย
     }
+  } else if (user && !isOrganizer) {
+    // ล็อกอินแล้วแต่ไม่อยู่ใน allowlist — แสดงข้อมูลคลาวด์ล่าสุดได้ตามปกติ
+    // อย่าให้ offlinePending ค้างถาวรจนกัน realtime ไม่ให้ apply
+    if (offlinePending) {
+      offlinePending = false;
+      if (pendingRemote) {
+        const row = pendingRemote;
+        pendingRemote = null;
+        applyRemote(row);
+      } else {
+        refreshFromCloud();
+      }
+    }
+    setSaveStatus('⚠ บัญชีนี้ไม่อยู่ใน allowlist ผู้จัด — ดูได้แต่แก้ไม่ได้', 'warn');
   }
   if (was !== canEdit) render();
 }
@@ -572,7 +703,7 @@ function openSyncChoiceModal(row) {
     <p style="line-height:1.9">มีการแก้ไขทั้งสองที่ระหว่างที่เครื่องนี้ออฟไลน์:</p>
     <ul style="line-height:2;color:var(--text-dim)">
       <li><b style="color:var(--text)">ในเครื่องนี้:</b> ${state.builds.length} บิลด์ / ${state.comps.length} คอมป์ — แก้ล่าสุด ${fmt(state.savedAt)}</li>
-      <li><b style="color:var(--text)">บนคลาวด์:</b> ${(cloud.builds || []).length} บิลด์ / ${(cloud.comps || []).length} คอมป์ — แก้ล่าสุด ${fmt(Date.parse(row.saved_at))}</li>
+      <li><b style="color:var(--text)">บนคลาวด์:</b> ${(cloud.builds || []).length} บิลด์ / ${(cloud.comps || []).length} คอมป์ — แก้ล่าสุด ${fmt(typeof row.savedAt === 'number' ? row.savedAt : 0)}</li>
     </ul>
     <div class="modal-actions" style="flex-wrap:wrap">
       <button class="btn" data-act="dl-local">⬇ ดาวน์โหลดชุดในเครื่องเก็บไว้</button>
@@ -596,18 +727,32 @@ function openSyncChoiceModal(row) {
   });
 }
 
-function renderAuthArea(email) {
+function renderAuthArea(email, signedIn) {
   const el = $('#auth-area');
   if (!el) return;
-  if (MODE !== 'supabase') {
+  if (MODE !== 'firebase') {
     el.hidden = true;
     return;
   }
   el.hidden = false;
-  el.innerHTML = canEdit
-    ? `<span class="auth-email" title="${esc(email)}">👤 ${esc(email.split('@')[0])}</span><button class="btn btn-ghost" id="btn-logout">ออกจากระบบ</button>`
-    : `<button class="btn btn-gold" id="btn-login">🔑 ผู้จัดทีม</button>`;
-  $('#btn-logout')?.addEventListener('click', () => sb.auth.signOut());
+  if (signedIn) {
+    el.innerHTML = `<span class="auth-email" title="${esc(email)}">👤 ${esc((email || '').split('@')[0])}${
+      isOrganizer ? '' : ' <span style="color:var(--danger);font-size:11px">(ดูอย่างเดียว)</span>'
+    }</span><button class="btn btn-ghost" id="btn-logout">ออกจากระบบ</button>`;
+  } else {
+    el.innerHTML = `<button class="btn btn-gold" id="btn-login">🔑 ผู้จัดทีม</button>`;
+  }
+  $('#btn-logout')?.addEventListener('click', () => {
+    // มีงานค้างยังไม่ขึ้นคลาวด์ — เตือนก่อน
+    if (dirty || saveTimer !== null || saving) {
+      if (!confirm('ยังมีงานยังไม่ได้บันทึกขึ้นคลาวด์ — ออกจากระบบเลยใช่ไหม? (งานจะค้างในเครื่องนี้)')) return;
+    }
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    pendingRemote = null;
+    // เก็บ dirty + offlinePending ไว้ เพื่อให้ login ครั้งหน้ารับช่วงต่อ
+    fbAuth.signOut();
+  });
   $('#btn-login')?.addEventListener('click', openLoginModal);
 }
 
@@ -628,25 +773,27 @@ function openLoginModal() {
     </div>
   `);
   setTimeout(() => $('#li-email', overlay)?.focus(), 50);
+  let inFlight = false; // กัน Enter รัวๆ ยิง signInWithEmailAndPassword หลายครั้งซ้อน
   const doLogin = async () => {
+    if (inFlight) return;
     const btn = $('[data-act="login"]', overlay);
-    if (!sb) {
+    if (!fbAuth) {
       $('#li-err', overlay).textContent = 'เชื่อมต่อคลาวด์ไม่ได้ — รีโหลดหน้าแล้วลองใหม่';
       return;
     }
+    inFlight = true;
     btn.disabled = true;
     $('#li-err', overlay).textContent = '';
-    const { error } = await sb.auth.signInWithPassword({
-      email: $('#li-email', overlay).value.trim(),
-      password: $('#li-pass', overlay).value,
-    });
-    if (error) {
-      btn.disabled = false;
+    try {
+      await fbAuth.signInWithEmailAndPassword($('#li-email', overlay).value.trim(), $('#li-pass', overlay).value);
+      closeModal(overlay);
+      refreshFromCloud();
+    } catch {
       $('#li-err', overlay).textContent = 'เข้าสู่ระบบไม่สำเร็จ — ตรวจอีเมล/รหัสผ่านอีกครั้ง';
-      return;
+      btn.disabled = false;
+    } finally {
+      inFlight = false;
     }
-    closeModal(overlay);
-    refreshFromCloud();
   };
   overlay.addEventListener('click', (e) => {
     const act = e.target.dataset?.act;
