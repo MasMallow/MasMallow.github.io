@@ -1346,7 +1346,12 @@ function openNewCompModal() {
         <input type="text" id="nc-name" placeholder="เช่น ZvZ จันทร์, Crystal 5v5" style="min-width:260px" />
       </label>
       <label>จำนวนคน
-        <input type="number" id="nc-size" min="1" max="50" value="5" style="width:90px" />
+        <div class="comp-size-input">
+          <button type="button" class="size-step" data-act="nc-dec" tabindex="-1">−</button>
+          <input type="number" id="nc-size" min="1" max="50" value="5" />
+          <span class="size-suffix">คน</span>
+          <button type="button" class="size-step" data-act="nc-inc" tabindex="-1">+</button>
+        </div>
       </label>
     </div>
     <div class="modal-actions">
@@ -1355,8 +1360,15 @@ function openNewCompModal() {
     </div>
   `);
   setTimeout(() => $('#nc-name', overlay)?.focus(), 50);
+  const stepNc = (delta) => {
+    const inp = $('#nc-size', overlay);
+    const v = Math.max(1, Math.min(50, (parseInt(inp.value, 10) || 0) + delta));
+    inp.value = String(v);
+  };
   overlay.addEventListener('click', (e) => {
     const act = e.target.dataset?.act;
+    if (act === 'nc-dec') return stepNc(-1);
+    if (act === 'nc-inc') return stepNc(1);
     if (act === 'cancel') closeModal(overlay);
     if (act === 'create') {
       const name = $('#nc-name', overlay).value.trim() || 'คอมป์ใหม่';
@@ -1434,11 +1446,12 @@ function renderCompDetail(root, comp) {
     <div class="comp-head">
       <button class="btn" data-act="back">← กลับ</button>
       <input type="text" class="comp-name" id="cd-name" value="${esc(comp.name)}" title="ชื่อคอมป์ (แก้ได้)" ${dis} />
-      <label style="display:flex;align-items:center;gap:6px;color:var(--text-dim);font-size:13px;">
-        จำนวน
-        <input type="number" id="cd-size" min="1" max="50" value="${comp.slots.length}" style="width:80px" ${dis} />
-        <span>คน</span>
-      </label>
+      <div class="comp-size-input" title="ขนาดทีม (1-50 คน)">
+        <button type="button" class="size-step" data-act="size-dec" ${dis} tabindex="-1">−</button>
+        <input type="number" id="cd-size" min="1" max="50" value="${comp.slots.length}" ${dis} />
+        <span class="size-suffix">คน</span>
+        <button type="button" class="size-step" data-act="size-inc" ${dis} tabindex="-1">+</button>
+      </div>
       <div class="spacer" style="flex:1"></div>
       <button class="btn" data-act="copy-text">📋 คัดลอกเป็นข้อความ</button>
       <button class="btn" data-act="dup-comp">⧉ ทำสำเนา</button>
@@ -1540,6 +1553,13 @@ function renderCompDetail(root, comp) {
     }
     if (!actBtn) return;
     const act = actBtn.dataset.act;
+    if (act === 'size-dec' || act === 'size-inc') {
+      const inp = $('#cd-size', root);
+      const v = Math.max(1, Math.min(50, (parseInt(inp.value, 10) || 0) + (act === 'size-inc' ? 1 : -1)));
+      inp.value = String(v);
+      inp.dispatchEvent(new Event('change', { bubbles: true }));
+      return;
+    }
     if (act === 'back') {
       currentCompId = null;
       render();
