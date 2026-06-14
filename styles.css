@@ -467,8 +467,10 @@ input::placeholder { color: #5d636d; }
 .comp-size-input .size-step:hover { background: var(--bg3); color: var(--gold); }
 .comp-size-input .size-step:disabled { opacity: 0.4; cursor: default; }
 .comp-size-input .size-step:disabled:hover { background: transparent; color: var(--text-dim); }
-.comp-size-input input {
+.comp-size-input input,
+.modal .form-row .comp-size-input input {
   width: 44px;
+  min-width: 0; /* แทน min-width: 180px ของ .modal .form-row input */
   border: none;
   background: transparent;
   text-align: center;
