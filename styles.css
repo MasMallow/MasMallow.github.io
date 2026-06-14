@@ -257,7 +257,12 @@ input::placeholder { color: #5d636d; }
   vertical-align: middle;
 }
 .slot-table tr:hover td { background: #1d2026; }
-.slot-num { color: var(--text-dim); width: 34px; text-align: right; font-size: 13px; }
+.slot-num { color: var(--text-dim); width: 48px; text-align: right; font-size: 13px; user-select: none; white-space: nowrap; }
+.slot-table tr[draggable="true"] .slot-num { cursor: grab; color: var(--gold-dim); }
+.slot-table tr[draggable="true"] .slot-num:active { cursor: grabbing; }
+.slot-table tr.dragging { opacity: 0.35; }
+.slot-table tr.drop-above td { box-shadow: inset 0 3px 0 0 var(--gold); }
+.slot-table tr.drop-below td { box-shadow: inset 0 -3px 0 0 var(--gold); }
 .slot-weap { width: 44px; }
 .slot-weap img { width: 40px; height: 40px; object-fit: contain; display: block; }
 .slot-weap .no-weap { width: 40px; height: 40px; border: 1px dashed var(--border); border-radius: 6px; opacity: .4; }

@@ -1402,8 +1402,8 @@ function renderCompDetail(root, comp) {
                     .join('')}</div>`
                 : '';
               return `
-            <tr data-idx="${idx}">
-              <td class="slot-num">${idx + 1}.</td>
+            <tr data-idx="${idx}" ${canEdit ? 'draggable="true"' : ''}>
+              <td class="slot-num" title="${canEdit ? 'ลากเพื่อย้ายแถว' : ''}">${canEdit ? '⋮⋮ ' : ''}${idx + 1}.</td>
               <td class="slot-weap">${wp ? `<img src="${esc(wp.img)}" title="${esc(wp.name)}" alt=""/>` : '<div class="no-weap"></div>'}</td>
               <td class="slot-build"><select data-field="build" ${dis}>${buildOptionsHtml(slot.build)}</select>${miniGear}</td>
               <td class="slot-role">${b ? `<span class="role-badge ${roleClass(b.role)}">${esc(roleLabel(b.role))}</span>` : ''}</td>
@@ -1508,6 +1508,9 @@ function renderCompDetail(root, comp) {
     if (act === 'copy-text') copyCompText(comp, actBtn);
   });
 
+  // ---------- drag & drop ลำดับแถว (เฉพาะ canEdit) ----------
+  if (canEdit) setupRowDrag(root, comp);
+
   // field bindings
   $$('.slot-table [data-field]', root).forEach((el) => {
     const tr = el.closest('tr');
@@ -1531,6 +1534,86 @@ function renderCompDetail(root, comp) {
         scheduleSave();
       });
     }
+  });
+}
+
+function setupRowDrag(root, comp) {
+  let srcIdx = null;
+  const clear = () => {
+    $$('.slot-table tr', root).forEach((x) => x.classList.remove('dragging', 'drop-above', 'drop-below'));
+  };
+  root.addEventListener('dragstart', (e) => {
+    const tr = e.target.closest('tr[data-idx]');
+    if (!tr || !tr.hasAttribute('draggable')) return;
+    // ห้ามเริ่มลากจาก input/select/button — ใช้ขอบหรือคอลัมน์ลำดับเท่านั้น
+    if (e.target.closest('input, select, button, textarea')) {
+      e.preventDefault();
+      return;
+    }
+    srcIdx = parseInt(tr.dataset.idx, 10);
+    tr.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    try {
+      e.dataTransfer.setData('text/plain', String(srcIdx));
+    } catch {
+      /* บางเบราว์เซอร์ไม่ยอมใน synthetic event */
+    }
+  });
+  root.addEventListener('dragover', (e) => {
+    if (srcIdx === null) return;
+    const tr = e.target.closest('tr[data-idx]');
+    if (!tr) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    $$('.slot-table tr.drop-above, .slot-table tr.drop-below', root).forEach((x) =>
+      x.classList.remove('drop-above', 'drop-below'),
+    );
+    const rect = tr.getBoundingClientRect();
+    const before = e.clientY - rect.top < rect.height / 2;
+    tr.classList.add(before ? 'drop-above' : 'drop-below');
+  });
+  root.addEventListener('drop', (e) => {
+    if (srcIdx === null) return;
+    e.preventDefault();
+    const tr = e.target.closest('tr[data-idx]');
+    if (!tr) return clear();
+    const targetIdx = parseInt(tr.dataset.idx, 10);
+    const rect = tr.getBoundingClientRect();
+    const before = e.clientY - rect.top < rect.height / 2;
+    let dest = before ? targetIdx : targetIdx + 1;
+    if (srcIdx < dest) dest--;
+    clear();
+    const src = srcIdx;
+    srcIdx = null;
+    if (src === dest) return;
+    const slotCount = comp.slots.length;
+    const [moved] = comp.slots.splice(src, 1);
+    comp.slots.splice(dest, 0, moved);
+    // ย้าย signups (ชื่อ/โน้ตของสมาชิก) ตามลำดับใหม่
+    const cur = (MODE === 'firebase' ? signups[comp.id] : null) || {};
+    const orderBefore = Array.from({ length: slotCount }, (_, i) => i);
+    const [movedIdx] = orderBefore.splice(src, 1);
+    orderBefore.splice(dest, 0, movedIdx);
+    // orderBefore[newIdx] = oldIdx
+    const newMap = {};
+    for (let newIdx = 0; newIdx < slotCount; newIdx++) {
+      const oldIdx = orderBefore[newIdx];
+      if (cur[oldIdx]) newMap[newIdx] = cur[oldIdx];
+    }
+    if (MODE === 'firebase' && fbDb) {
+      // optimistic — อัปเดต local ก่อนเพื่อไม่ให้ UI กระพริบรอ realtime echo
+      signups[comp.id] = newMap;
+      fbDb
+        .ref(`signups/${comp.id}`)
+        .set(Object.keys(newMap).length ? newMap : null)
+        .catch(() => {});
+    }
+    scheduleSave();
+    render();
+  });
+  root.addEventListener('dragend', () => {
+    srcIdx = null;
+    clear();
   });
 }
 
