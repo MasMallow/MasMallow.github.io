@@ -1033,6 +1033,72 @@ function pickItem(cat, currentId) {
 }
 
 // ---------- build editor ----------
+// popup รายละเอียดบิลด์ — read-only สำหรับสมาชิกทั่วไป, ผู้จัดมีปุ่ม "แก้ไข"
+function openBuildView(buildId) {
+  const b = state.builds.find((x) => x.id === buildId);
+  if (!b) return;
+  const overlay = openModal(
+    `
+    <div class="bv-head">
+      <span class="role-badge ${roleClass(b.role)}">${esc(roleLabel(b.role))}</span>
+      <h2 style="margin:0;flex:1;font-size:20px">${esc(b.name)}</h2>
+    </div>
+    <div class="bv-gear">
+      ${GEAR_SLOTS.map((g) => {
+        const it = item(b[g.key]);
+        return `
+        <div class="bv-slot">
+          <div class="bv-icon ${it ? '' : 'empty'}" title="${it ? esc(it.name) : 'ไม่ได้เลือก' + esc(g.label)}">
+            ${it ? `<img src="${esc(it.img)}" alt="" />` : '<span class="bv-dash">—</span>'}
+          </div>
+          <div class="bv-slot-label">${esc(g.label)}</div>
+          <div class="bv-slot-name">${it ? esc(it.name) : '<span style="color:#5d636d">ไม่ได้เลือก</span>'}</div>
+        </div>`;
+      }).join('')}
+    </div>
+    ${b.food || b.potion ? `<div class="bv-consumables">${[b.food && `<b>อาหาร:</b> ${esc(b.food)}`, b.potion && `<b>ยา:</b> ${esc(b.potion)}`].filter(Boolean).join(' · ')}</div>` : ''}
+    ${b.note ? `<div class="bv-note-label">หมายเหตุ</div><div class="bv-note">${esc(b.note)}</div>` : '<div class="bv-note-empty">ไม่มีหมายเหตุ</div>'}
+    <div class="modal-actions">
+      ${canEdit ? `<button class="btn btn-danger" data-act="del">🗑 ลบ</button><button class="btn" data-act="copy">⧉ คัดลอก</button><button class="btn btn-gold" data-act="edit">✏️ แก้ไข</button>` : ''}
+      <button class="btn" data-act="close">ปิด</button>
+    </div>
+  `,
+    'build-view-modal',
+  );
+  overlay.addEventListener('click', (e) => {
+    const act = e.target.dataset?.act;
+    if (act === 'close') closeModal(overlay);
+    if (act === 'edit') {
+      closeModal(overlay);
+      openBuildEditor(buildId);
+    }
+    if (act === 'copy') {
+      const src = state.builds.find((x) => x.id === buildId);
+      if (!src) return;
+      const copy = JSON.parse(JSON.stringify(src));
+      copy.id = uid();
+      copy.name = src.name + ' (สำเนา)';
+      state.builds.push(copy);
+      scheduleSave();
+      closeModal(overlay);
+      render();
+    }
+    if (act === 'del') {
+      const used = buildUsageCount(buildId);
+      const msg =
+        used > 0
+          ? `ลบบิลด์ "${b.name}" ?\n\nบิลด์นี้ถูกใช้อยู่ใน ${used} ช่องของคอมป์ — ช่องเหล่านั้นจะกลายเป็นว่าง`
+          : `ลบบิลด์ "${b.name}" ?`;
+      if (!confirm(msg)) return;
+      state.builds = state.builds.filter((x) => x.id !== buildId);
+      for (const c of state.comps) for (const s of c.slots) if (s.build === buildId) s.build = null;
+      scheduleSave();
+      closeModal(overlay);
+      render();
+    }
+  });
+}
+
 function openBuildEditor(buildId) {
   if (!canEdit) return;
   const existing = state.builds.find((b) => b.id === buildId);
@@ -1185,11 +1251,19 @@ function renderBuilds(root) {
   });
 
   root.addEventListener('click', (e) => {
+    // คลิกบนการ์ดบิลด์ (ที่ไม่ใช่ปุ่ม) → เปิด popup รายละเอียดบิลด์
+    const card = e.target.closest('.build-card');
+    if (card && !e.target.closest('[data-act]')) {
+      const bid = card.dataset.id;
+      if (bid) openBuildView(bid);
+      return;
+    }
     const btn = e.target.closest('[data-act]');
     if (!btn) return;
     const act = btn.dataset.act;
     const id = btn.dataset.id;
     if (act === 'new-build') openBuildEditor(null);
+    if (act === 'view-build') openBuildView(id);
     if (act === 'edit-build') openBuildEditor(id);
     if (act === 'copy-build') {
       const src = state.builds.find((b) => b.id === id);
@@ -1217,7 +1291,7 @@ function renderBuilds(root) {
 function buildCardHtml(b) {
   const extras = [b.food && `อาหาร: ${esc(b.food)}`, b.potion && `ยา: ${esc(b.potion)}`].filter(Boolean);
   return `
-    <div class="build-card">
+    <div class="build-card" data-id="${b.id}" title="คลิกเพื่อดูรายละเอียดบิลด์">
       <div class="build-card-head">
         <span class="role-badge ${roleClass(b.role)}">${esc(roleLabel(b.role))}</span>
         <h3>${esc(b.name)}</h3>
@@ -1232,6 +1306,7 @@ function buildCardHtml(b) {
       </div>
       ${extras.length ? `<div class="build-extras">${extras.join(' · ')}</div>` : ''}
       ${b.note ? `<div class="build-note">${esc(b.note)}</div>` : ''}
+      ${b.note && b.note.length > 80 ? `<button class="btn-link" data-act="view-build" data-id="${b.id}">ดูเพิ่มเติม…</button>` : ''}
       <div class="card-actions">
         <button class="btn btn-sm" data-act="edit-build" data-id="${b.id}">✏️ แก้ไข</button>
         <button class="btn btn-sm" data-act="copy-build" data-id="${b.id}">⧉ คัดลอก</button>

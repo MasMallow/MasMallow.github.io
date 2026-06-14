@@ -156,8 +156,11 @@ input::placeholder { color: #5d636d; }
   display: flex;
   flex-direction: column;
   gap: 10px;
+  cursor: pointer;
 }
-.build-card:hover { border-color: var(--gold-dim); }
+.build-card:hover { border-color: var(--gold-dim); transform: translateY(-1px); transition: transform .12s ease; }
+/* ปุ่มภายในการ์ดไม่ใช้ cursor pointer ของการ์ด (มี cursor ของตัวเอง) */
+.build-card button, .build-card .btn-link { cursor: pointer; }
 .build-card-head { display: flex; align-items: center; gap: 10px; }
 .build-card-head h3 { margin: 0; font-size: 16px; flex: 1; word-break: break-word; }
 .gear-row { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -188,7 +191,31 @@ input::placeholder { color: #5d636d; }
 .gear-cell.empty { opacity: .45; }
 .gear-cell.empty::after { content: '—'; color: #555; font-size: 18px; }
 .build-extras { font-size: 12.5px; color: var(--text-dim); line-height: 1.7; }
-.build-note { font-size: 13px; color: var(--text-dim); white-space: pre-wrap; word-break: break-word; border-top: 1px dashed var(--border); padding-top: 8px; }
+.build-note {
+  font-size: 13px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+  /* ตัดให้ไม่เกิน 3 บรรทัด — ดูเต็มต้องเปิด popup */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  line-clamp: 3;
+  overflow: hidden;
+}
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--gold);
+  font-size: 12px;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  margin-top: -4px;
+}
+.btn-link:hover { text-decoration: underline; }
 .card-actions { display: flex; gap: 6px; margin-top: auto; padding-top: 4px; }
 
 /* ---------- comp cards ---------- */
@@ -412,6 +439,49 @@ input::placeholder { color: #5d636d; }
 .item-tile img { width: 56px; height: 56px; object-fit: contain; }
 .item-tile .item-name { font-size: 11px; line-height: 1.25; color: var(--text); word-break: break-word; }
 .item-tile.selected { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold); }
+
+/* ---------- build view modal ---------- */
+.build-view-modal { max-width: 760px; }
+.bv-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+.bv-gear {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.bv-slot { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.bv-icon {
+  width: 72px;
+  height: 72px;
+  background: radial-gradient(circle at 50% 40%, #2b2f38, #1a1d23);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.bv-icon.empty { opacity: 0.4; }
+.bv-icon img { width: 66px; height: 66px; object-fit: contain; }
+.bv-dash { color: #555; font-size: 22px; }
+.bv-slot-label { font-size: 11px; color: var(--text-dim); }
+.bv-slot-name { font-size: 11px; text-align: center; min-height: 28px; line-height: 1.3; word-break: break-word; max-width: 96px; }
+.bv-consumables { font-size: 13px; color: var(--text-dim); border-top: 1px dashed var(--border); padding-top: 10px; margin-bottom: 12px; }
+.bv-consumables b { color: var(--text); font-weight: 600; }
+.bv-note-label { font-size: 13px; color: var(--text-dim); font-weight: 600; margin: 8px 0 4px; }
+.bv-note {
+  font-size: 14px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  max-height: 280px;
+  overflow-y: auto;
+  line-height: 1.7;
+}
+.bv-note-empty { font-size: 12px; color: var(--text-dim); font-style: italic; margin: 8px 0; }
 
 /* ---------- auth / viewer mode ---------- */
 #auth-area { display: inline-flex; align-items: center; gap: 8px; }
