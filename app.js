@@ -1345,10 +1345,8 @@ function openNewCompModal() {
       <label>ชื่อคอมป์
         <input type="text" id="nc-name" placeholder="เช่น ZvZ จันทร์, Crystal 5v5" style="min-width:260px" />
       </label>
-      <label>ขนาดทีม
-        <select id="nc-size">
-          ${COMP_SIZES.map((s) => `<option value="${s}">${s} คน</option>`).join('')}
-        </select>
+      <label>จำนวนคน
+        <input type="number" id="nc-size" min="1" max="50" value="5" style="width:90px" />
       </label>
     </div>
     <div class="modal-actions">
@@ -1362,7 +1360,9 @@ function openNewCompModal() {
     if (act === 'cancel') closeModal(overlay);
     if (act === 'create') {
       const name = $('#nc-name', overlay).value.trim() || 'คอมป์ใหม่';
-      const size = parseInt($('#nc-size', overlay).value, 10);
+      let size = parseInt($('#nc-size', overlay).value, 10);
+      if (!Number.isFinite(size) || size < 1) size = 1;
+      if (size > 50) size = 50;
       const c = newComp(name, size);
       state.comps.push(c);
       currentCompId = c.id;
@@ -1427,20 +1427,18 @@ function buildOptionsHtml(selectedId) {
 function renderCompDetail(root, comp) {
   const dis = canEdit ? '' : 'disabled';
   const { counts, empty } = compRoleSummary(comp);
-  const partySize = 5;
-  const parties = [];
-  for (let i = 0; i < comp.slots.length; i += partySize) {
-    parties.push(comp.slots.slice(i, i + partySize).map((s, j) => ({ slot: s, idx: i + j })));
-  }
+  // แสดงเป็น list เดียว ไม่แบ่งปาร์ตี้
+  const allSlots = comp.slots.map((s, i) => ({ slot: s, idx: i }));
 
   root.innerHTML = `
     <div class="comp-head">
       <button class="btn" data-act="back">← กลับ</button>
       <input type="text" class="comp-name" id="cd-name" value="${esc(comp.name)}" title="ชื่อคอมป์ (แก้ได้)" ${dis} />
-      <select id="cd-size" title="ขนาดทีม" ${dis}>
-        ${COMP_SIZES.map((s) => `<option value="${s}" ${s === comp.slots.length ? 'selected' : ''}>${s} คน</option>`).join('')}
-        ${!COMP_SIZES.includes(comp.slots.length) ? `<option value="${comp.slots.length}" selected>${comp.slots.length} คน</option>` : ''}
-      </select>
+      <label style="display:flex;align-items:center;gap:6px;color:var(--text-dim);font-size:13px;">
+        จำนวน
+        <input type="number" id="cd-size" min="1" max="50" value="${comp.slots.length}" style="width:80px" ${dis} />
+        <span>คน</span>
+      </label>
       <div class="spacer" style="flex:1"></div>
       <button class="btn" data-act="copy-text">📋 คัดลอกเป็นข้อความ</button>
       <button class="btn" data-act="dup-comp">⧉ ทำสำเนา</button>
@@ -1454,13 +1452,9 @@ function renderCompDetail(root, comp) {
       ${state.builds.length === 0 ? `<span style="color:var(--support);font-size:13px;">⚠ ยังไม่มีบิลด์ — ไปที่แท็บ "บิลด์ / เซ็ต" เพื่อสร้างก่อน</span>` : ''}
     </div>
 
-    ${parties
-      .map(
-        (party, pi) => `
-      <div class="party-block">
-        ${comp.slots.length > partySize ? `<div class="party-title">ปาร์ตี้ ${pi + 1}</div>` : ''}
-        <table class="slot-table">
-          ${party
+    <div class="party-block">
+      <table class="slot-table">
+        ${allSlots
             .map(({ slot, idx }) => {
               const b = state.builds.find((x) => x.id === slot.build);
               const wp = b ? item(b.weapon) : null;
@@ -1490,12 +1484,10 @@ function renderCompDetail(root, comp) {
                 <button class="btn btn-danger" data-act="clear-slot" title="ล้างช่องนี้">✕</button>
               </td>
             </tr>`;
-            })
-            .join('')}
-        </table>
-      </div>`,
-      )
-      .join('')}
+          })
+          .join('')}
+      </table>
+    </div>
   `;
 
   // header actions
@@ -1504,7 +1496,10 @@ function renderCompDetail(root, comp) {
     scheduleSave();
   });
   $('#cd-size', root).addEventListener('change', (e) => {
-    const newSize = parseInt(e.target.value, 10);
+    let newSize = parseInt(e.target.value, 10);
+    if (!Number.isFinite(newSize) || newSize < 1) newSize = 1;
+    if (newSize > 50) newSize = 50;
+    e.target.value = String(newSize);
     if (newSize < comp.slots.length) {
       const dropped = comp.slots.slice(newSize).filter((s, j) => {
         const i = newSize + j;
@@ -1693,10 +1688,8 @@ function setupRowDrag(root, comp) {
 }
 
 async function copyCompText(comp, btn) {
-  const partySize = 5;
   const lines = [`📋 ${comp.name} (${comp.slots.length} คน)`];
   comp.slots.forEach((s, i) => {
-    if (comp.slots.length > partySize && i % partySize === 0) lines.push(`— ปาร์ตี้ ${i / partySize + 1} —`);
     const b = state.builds.find((x) => x.id === s.build);
     const role = b ? `[${roleLabel(b.role)}]` : '[ว่าง]';
     const buildName = b ? b.name : '-';
