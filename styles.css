@@ -428,7 +428,6 @@ body.viewer .slot-actions .btn,
 body.viewer #btn-import {
   display: none !important;
 }
-body.viewer .slot-table input:disabled,
 body.viewer .slot-table select:disabled,
 body.viewer .comp-name:disabled,
 body.viewer #cd-size:disabled {
@@ -436,6 +435,15 @@ body.viewer #cd-size:disabled {
   border-color: transparent;
   background: transparent;
   cursor: default;
+}
+/* ใน viewer mode — ช่อง player/note ยังกรอกได้ (เก็บใน /signups) ใส่กรอบทองให้รู้ว่ากรอกได้ */
+body.viewer .slot-player input,
+body.viewer .slot-note input {
+  border-color: var(--gold-dim);
+}
+body.viewer .slot-player input:focus,
+body.viewer .slot-note input:focus {
+  border-color: var(--gold);
 }
 
 /* scrollbar */

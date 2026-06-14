@@ -46,6 +46,11 @@ let pendingRemote = null; // ข้อมูลใหม่จากคลาว
 let offlinePending = false; // มีงานออฟไลน์ใน localStorage ที่ยังไม่ขึ้นคลาวด์
 let isOrganizer = false; // ผ่านการเช็คใน allowlist /organizers/{uid} แล้ว
 
+// signups — สมาชิกกิลด์ทั่วไป (ไม่ใช่ผู้จัด) ใส่ชื่อตัวเอง + โน้ตในคอมป์ได้
+// โครงสร้าง: { [compId]: { [slotIdx]: { player, note } } }
+let signups = {};
+const signupTimers = Object.create(null);
+
 const CFG = window.APP_CONFIG || {};
 
 function firebaseConfigured() {
@@ -519,8 +524,56 @@ async function loadDataFirebase() {
 // RTDB onValue ทำงาน realtime + ออฟไลน์ cache ในตัว — เรียบง่ายกว่า Supabase channel มาก
 // หมายเหตุ: network drop = Firebase auto-reconnect, แต่ PERMISSION_DENIED = listener หลุดถาวร ต้อง re-attach เอง
 let rtRetryQueued = false;
+// อ่าน player/note จาก signups (ถ้ามี) ก่อน — fallback เป็น slot field เดิม (โหมด local/browser)
+function slotPlayer(compId, idx, slot) {
+  const v = signups?.[compId]?.[idx]?.player;
+  return (typeof v === 'string' ? v : null) ?? slot.player ?? '';
+}
+function slotNote(compId, idx, slot) {
+  const v = signups?.[compId]?.[idx]?.note;
+  return (typeof v === 'string' ? v : null) ?? slot.note ?? '';
+}
+
+// บันทึกชื่อ/โน้ตของสมาชิกทั่วไป (ไม่ผ่าน /app_data) — เปิดให้ทุกคนเขียนผ่าน rules
+function saveSignup(compId, idx, field, value) {
+  const trimmed = String(value || '').slice(0, field === 'note' ? 200 : 60);
+  if (MODE !== 'firebase' || !fbDb) {
+    // local/browser → ทำเหมือนเดิม (เก็บใน slot ที่ /app_data)
+    const comp = state.comps.find((c) => c.id === compId);
+    if (!comp) return;
+    comp.slots[idx][field] = trimmed;
+    scheduleSave();
+    return;
+  }
+  const key = compId + ':' + idx + ':' + field;
+  clearTimeout(signupTimers[key]);
+  signupTimers[key] = setTimeout(() => {
+    fbDb
+      .ref(`signups/${compId}/${idx}/${field}`)
+      .set(trimmed || null)
+      .catch(() => {
+        setSaveStatus('⚠ บันทึก ' + (field === 'player' ? 'ชื่อ' : 'โน้ต') + ' ไม่สำเร็จ ลองใหม่อีกครั้ง', 'err');
+      });
+  }, 500);
+}
+
 function startRealtime() {
   if (MODE !== 'firebase' || !fbDb) return;
+  // listener ของ signups — ทุกคนอ่านได้ แสดงผลเรียลไทม์
+  try {
+    fbDb.ref('signups').on(
+      'value',
+      (snap) => {
+        signups = snap.val() || {};
+        if (currentTab === 'comps' && currentCompId) render();
+      },
+      () => {
+        /* permission/network ปัญหา — ปล่อย state.comps fallback */
+      },
+    );
+  } catch {
+    /* ignore */
+  }
   const attach = () => {
     try {
       fbDb.ref('app_data').on(
@@ -1354,8 +1407,8 @@ function renderCompDetail(root, comp) {
               <td class="slot-weap">${wp ? `<img src="${esc(wp.img)}" title="${esc(wp.name)}" alt=""/>` : '<div class="no-weap"></div>'}</td>
               <td class="slot-build"><select data-field="build" ${dis}>${buildOptionsHtml(slot.build)}</select>${miniGear}</td>
               <td class="slot-role">${b ? `<span class="role-badge ${roleClass(b.role)}">${esc(roleLabel(b.role))}</span>` : ''}</td>
-              <td class="slot-player"><input type="text" data-field="player" placeholder="ชื่อผู้เล่น" value="${esc(slot.player)}" ${dis} /></td>
-              <td class="slot-note"><input type="text" data-field="note" placeholder="โน้ต เช่น ตัวสำรอง, เรียก engage" value="${esc(slot.note)}" ${dis} /></td>
+              <td class="slot-player"><input type="text" data-field="player" placeholder="ชื่อผู้เล่น" value="${esc(slotPlayer(comp.id, idx, slot))}" maxlength="60" /></td>
+              <td class="slot-note"><input type="text" data-field="note" placeholder="โน้ต เช่น ตัวสำรอง, เรียก engage" value="${esc(slotNote(comp.id, idx, slot))}" maxlength="200" /></td>
               <td class="slot-actions">
                 <button class="btn" data-move="-1" title="เลื่อนขึ้น">↑</button>
                 <button class="btn" data-move="1" title="เลื่อนลง">↓</button>
@@ -1378,10 +1431,19 @@ function renderCompDetail(root, comp) {
   $('#cd-size', root).addEventListener('change', (e) => {
     const newSize = parseInt(e.target.value, 10);
     if (newSize < comp.slots.length) {
-      const dropped = comp.slots.slice(newSize).filter((s) => s.build || s.player || s.note);
+      const dropped = comp.slots.slice(newSize).filter((s, j) => {
+        const i = newSize + j;
+        return s.build || s.player || s.note || slotPlayer(comp.id, i, s) || slotNote(comp.id, i, s);
+      });
       if (dropped.length && !confirm(`ลดขนาดเป็น ${newSize} คน?\nช่องที่จัดไว้แล้ว ${dropped.length} ช่อง (ลำดับท้าย) จะถูกตัดออก`)) {
         e.target.value = String(comp.slots.length);
         return;
+      }
+      // ลบ signups ของ slot ที่ตัดออกด้วย
+      if (MODE === 'firebase' && fbDb && canEdit) {
+        for (let i = newSize; i < comp.slots.length; i++) {
+          fbDb.ref(`signups/${comp.id}/${i}`).remove().catch(() => {});
+        }
       }
       comp.slots = comp.slots.slice(0, newSize);
     } else {
@@ -1415,6 +1477,10 @@ function renderCompDetail(root, comp) {
     if (act === 'del-comp') {
       if (!confirm(`ลบคอมป์ "${comp.name}" ?`)) return;
       state.comps = state.comps.filter((c) => c.id !== comp.id);
+      // ล้าง signups ของคอมป์นี้ทั้งก้อน
+      if (MODE === 'firebase' && fbDb && canEdit) {
+        fbDb.ref(`signups/${comp.id}`).remove().catch(() => {});
+      }
       currentCompId = null;
       scheduleSave();
       render();
@@ -1432,6 +1498,10 @@ function renderCompDetail(root, comp) {
       const tr = actBtn.closest('tr');
       const idx = parseInt(tr.dataset.idx, 10);
       comp.slots[idx] = { build: null, player: '', note: '' };
+      // ล้าง signups (ชื่อ/โน้ตที่สมาชิกใส่ไว้) ของช่องนี้ด้วย
+      if (MODE === 'firebase' && fbDb && canEdit) {
+        fbDb.ref(`signups/${comp.id}/${idx}`).remove().catch(() => {});
+      }
       scheduleSave();
       render();
     }
@@ -1452,6 +1522,9 @@ function renderCompDetail(root, comp) {
         const fresh = document.querySelector(`tr[data-idx="${idx}"] [data-field="build"]`);
         if (fresh) fresh.focus();
       });
+    } else if (field === 'player' || field === 'note') {
+      // ทุกคนเขียนได้ (ไม่จำเป็นต้องเป็นผู้จัด) — ไปยัง path /signups ใน firebase
+      el.addEventListener('input', () => saveSignup(comp.id, idx, field, el.value));
     } else {
       el.addEventListener('input', () => {
         comp.slots[idx][field] = el.value;
@@ -1470,7 +1543,9 @@ async function copyCompText(comp, btn) {
     const role = b ? `[${roleLabel(b.role)}]` : '[ว่าง]';
     const buildName = b ? b.name : '-';
     const wp = b ? item(b.weapon)?.name : null;
-    lines.push(`${i + 1}. ${role} ${buildName}${wp ? ` (${wp})` : ''} — ${s.player || '......'}${s.note ? ` *${s.note}` : ''}`);
+    const player = slotPlayer(comp.id, i, s);
+    const note = slotNote(comp.id, i, s);
+    lines.push(`${i + 1}. ${role} ${buildName}${wp ? ` (${wp})` : ''} — ${player || '......'}${note ? ` *${note}` : ''}`);
   });
   const text = lines.join('\n');
   try {

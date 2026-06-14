@@ -25,6 +25,24 @@
       "$uid": {
         ".read": "auth != null && auth.uid === $uid"
       }
+    },
+    "signups": {
+      ".read": true,
+      "$compId": {
+        ".write": "auth != null && root.child('organizers').child(auth.uid).val() === true",
+        "$slotIdx": {
+          ".write": true,
+          "player": {
+            ".validate": "newData.val() === null || (newData.isString() && newData.val().length <= 60)"
+          },
+          "note": {
+            ".validate": "newData.val() === null || (newData.isString() && newData.val().length <= 200)"
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      }
     }
   }
 }
