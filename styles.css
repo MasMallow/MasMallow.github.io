@@ -105,7 +105,8 @@ main { max-width: 1280px; margin: 0 auto; padding: 18px 20px 80px; }
 }
 .toolbar .spacer { flex: 1; }
 
-input[type="text"], input[type="search"], select, textarea {
+input[type="text"], input[type="email"], input[type="password"], input[type="number"],
+input[type="search"], select, textarea {
   background: var(--bg2);
   border: 1px solid var(--border);
   color: var(--text);
@@ -116,6 +117,14 @@ input[type="text"], input[type="search"], select, textarea {
 }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--gold-dim); }
 input::placeholder { color: #5d636d; }
+/* กัน browser autofill เปลี่ยนสีพื้นหลังเป็นขาว */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--text);
+  -webkit-box-shadow: 0 0 0 30px var(--bg2) inset;
+  transition: background-color 9999s ease-in-out 0s;
+}
 
 .empty-hint {
   text-align: center;
@@ -294,6 +303,82 @@ input::placeholder { color: #5d636d; }
 .slot-weap img { width: 40px; height: 40px; object-fit: contain; display: block; }
 .slot-weap .no-weap { width: 40px; height: 40px; border: 1px dashed var(--border); border-radius: 6px; opacity: .4; }
 .slot-build select { width: 100%; max-width: 320px; }
+/* build picker trigger — แทน select ใน slot row */
+.build-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 360px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  line-height: 1.3;
+}
+.build-trigger:hover { border-color: var(--gold-dim); }
+.build-trigger:focus { outline: none; border-color: var(--gold); }
+.build-trigger:disabled { cursor: default; opacity: 0.7; }
+.build-trigger .bt-role-tag {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 10px;
+  color: #14161a;
+  white-space: nowrap;
+}
+.build-trigger .bt-empty { color: var(--text-dim); flex: 1; }
+.build-trigger > :nth-child(2) { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.build-trigger .bt-arrow { color: var(--text-dim); font-size: 10px; margin-left: auto; }
+
+/* build picker list (inside picker modal) */
+.build-list {
+  max-height: 56vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 8px;
+}
+.build-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 14px;
+  text-align: left;
+  font-family: inherit;
+}
+.build-row:hover { border-color: var(--gold); background: #2c3038; }
+.build-row.selected { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold); }
+.build-row .build-row-weap { width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.build-row .build-row-weap img { width: 32px; height: 32px; object-fit: contain; }
+.build-row .build-row-name { flex: 1; }
+.build-row .bt-role-tag {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 9px;
+  border-radius: 12px;
+  color: #14161a;
+  white-space: nowrap;
+}
+.bt-role-tag.role-tank { background: var(--tank); }
+.bt-role-tag.role-healer { background: var(--healer); }
+.bt-role-tag.role-support { background: var(--support); }
+.bt-role-tag.role-dps { background: var(--dps); }
+.bt-role-tag.role-other { background: var(--other); }
 .slot-gear-mini {
   display: flex;
   gap: 3px;

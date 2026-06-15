@@ -1436,6 +1436,95 @@ function buildOptionsHtml(selectedId) {
   );
 }
 
+// popup เลือกบิลด์พร้อมค้นหา (แทน <select> สำหรับช่องในคอมป์)
+function pickBuild(currentId) {
+  return new Promise((resolve) => {
+    const order = Object.fromEntries(ROLES.map((r, i) => [r.id, i]));
+    const sorted = [...state.builds].sort(
+      (a, b) => (order[a.role] ?? 9) - (order[b.role] ?? 9) || a.name.localeCompare(b.name, 'th'),
+    );
+    let search = '';
+    let roleSel = '';
+
+    const overlay = openModal(
+      `
+      <h2>เลือกบิลด์</h2>
+      <div class="picker-filters">
+        <button class="chip ${roleSel === '' ? 'active' : ''}" data-role="">ทั้งหมด</button>
+        ${ROLES.map((r) => `<button class="chip ${roleSel === r.id ? 'active' : ''}" data-role="${r.id}">${esc(r.label)}</button>`).join('')}
+        <input type="search" class="picker-search" placeholder="ค้นหาชื่อบิลด์…" autofocus />
+      </div>
+      <div class="build-list"></div>
+      <div class="modal-actions">
+        ${currentId ? '<button class="btn btn-danger" data-act="clear">ล้างช่องนี้ (— ว่าง —)</button>' : ''}
+        <button class="btn" data-act="cancel">ยกเลิก</button>
+      </div>
+    `,
+      'picker-modal',
+    );
+
+    let done = false;
+    const finish = (val) => {
+      if (done) return;
+      done = true;
+      closeModal(overlay);
+      resolve(val);
+    };
+    overlay._onClose = () => {
+      if (!done) {
+        done = true;
+        resolve(undefined);
+      }
+    };
+
+    const list = $('.build-list', overlay);
+    const renderList = () => {
+      const q = search.trim().toLowerCase();
+      const filtered = sorted.filter((b) => {
+        if (roleSel && b.role !== roleSel) return false;
+        if (q && !b.name.toLowerCase().includes(q)) return false;
+        return true;
+      });
+      list.innerHTML = filtered.length
+        ? filtered
+            .map((b) => {
+              const wp = item(b.weapon);
+              return `
+              <button class="build-row ${b.id === currentId ? 'selected' : ''}" data-id="${esc(b.id)}">
+                <span class="bt-role-tag ${roleClass(b.role)}">${esc(roleLabel(b.role))}</span>
+                <span class="build-row-weap">${wp ? `<img src="${esc(wp.img)}" alt="" />` : ''}</span>
+                <span class="build-row-name">${esc(b.name)}</span>
+              </button>`;
+            })
+            .join('')
+        : '<p style="color:var(--text-dim);text-align:center;padding:30px 0;">ไม่พบบิลด์</p>';
+    };
+    renderList();
+
+    $('.picker-search', overlay).addEventListener('input', (e) => {
+      search = e.target.value;
+      renderList();
+    });
+    $$('.chip', overlay).forEach((ch) =>
+      ch.addEventListener('click', () => {
+        roleSel = ch.dataset.role;
+        $$('.chip', overlay).forEach((c) => c.classList.toggle('active', c === ch));
+        renderList();
+      }),
+    );
+    list.addEventListener('click', (e) => {
+      const row = e.target.closest('.build-row');
+      if (row) finish(row.dataset.id);
+    });
+    overlay.addEventListener('click', (e) => {
+      const act = e.target.dataset?.act;
+      if (act === 'cancel') finish(undefined);
+      if (act === 'clear') finish(null);
+    });
+    setTimeout(() => $('.picker-search', overlay)?.focus(), 50);
+  });
+}
+
 function renderCompDetail(root, comp) {
   const dis = canEdit ? '' : 'disabled';
   const { counts, empty } = compRoleSummary(comp);
@@ -1487,7 +1576,9 @@ function renderCompDetail(root, comp) {
             <tr data-idx="${idx}" ${canEdit ? 'draggable="true"' : ''}>
               <td class="slot-num" title="${canEdit ? 'ลากเพื่อย้ายแถว' : ''}">${canEdit ? '⋮⋮ ' : ''}${idx + 1}.</td>
               <td class="slot-weap">${wp ? `<img src="${esc(wp.img)}" title="${esc(wp.name)}" alt=""/>` : '<div class="no-weap"></div>'}</td>
-              <td class="slot-build"><select data-field="build" ${dis}>${buildOptionsHtml(slot.build)}</select>${miniGear}</td>
+              <td class="slot-build"><button type="button" class="build-trigger" data-pick-build="${idx}" ${dis}>${
+                b ? `<span class="bt-role-tag ${roleClass(b.role)}">${esc(roleLabel(b.role))}</span> ${esc(b.name)}` : '<span class="bt-empty">— ว่าง —</span>'
+              }<span class="bt-arrow">▾</span></button>${miniGear}</td>
               <td class="slot-role">${b ? `<span class="role-badge ${roleClass(b.role)}">${esc(roleLabel(b.role))}</span>` : ''}</td>
               <td class="slot-player"><input type="text" data-field="player" placeholder="ชื่อผู้เล่น" value="${esc(slotPlayer(comp.id, idx, slot))}" maxlength="60" /></td>
               <td class="slot-note"><input type="text" data-field="note" placeholder="โน้ต เช่น ตัวสำรอง, เรียก engage" value="${esc(slotNote(comp.id, idx, slot))}" maxlength="200" /></td>
@@ -1551,6 +1642,20 @@ function renderCompDetail(root, comp) {
       render();
       return;
     }
+    // คลิกที่ปุ่ม build trigger → เปิด picker (ตรวจก่อน data-act guard เพราะ trigger ไม่มี data-act)
+    const pickBuildBtn = e.target.closest('.build-trigger');
+    if (pickBuildBtn && !pickBuildBtn.disabled) {
+      const idx = parseInt(pickBuildBtn.dataset.pickBuild, 10);
+      const cur = comp.slots[idx].build;
+      (async () => {
+        const picked = await pickBuild(cur);
+        if (picked === undefined) return;
+        comp.slots[idx].build = picked || null;
+        scheduleSave();
+        render();
+      })();
+      return;
+    }
     if (!actBtn) return;
     const act = actBtn.dataset.act;
     if (act === 'size-dec' || act === 'size-inc') {
@@ -1606,23 +1711,9 @@ function renderCompDetail(root, comp) {
     const tr = el.closest('tr');
     const idx = parseInt(tr.dataset.idx, 10);
     const field = el.dataset.field;
-    if (field === 'build') {
-      el.addEventListener('change', () => {
-        comp.slots[idx].build = el.value || null;
-        scheduleSave();
-        render(); // update weapon icon + role badge + summary
-        // render ทำลาย select เดิม — คืน focus ให้ช่องเดิมเพื่อให้กด Tab กรอกต่อได้
-        const fresh = document.querySelector(`tr[data-idx="${idx}"] [data-field="build"]`);
-        if (fresh) fresh.focus();
-      });
-    } else if (field === 'player' || field === 'note') {
+    if (field === 'player' || field === 'note') {
       // ทุกคนเขียนได้ (ไม่จำเป็นต้องเป็นผู้จัด) — ไปยัง path /signups ใน firebase
       el.addEventListener('input', () => saveSignup(comp.id, idx, field, el.value));
-    } else {
-      el.addEventListener('input', () => {
-        comp.slots[idx][field] = el.value;
-        scheduleSave();
-      });
     }
   });
 }
